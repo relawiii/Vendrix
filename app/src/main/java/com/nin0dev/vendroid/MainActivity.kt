@@ -8,8 +8,6 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.StrictMode
-import android.os.StrictMode.ThreadPolicy
 import android.view.KeyEvent
 import android.view.View.GONE
 import android.view.View.VISIBLE
@@ -190,7 +188,6 @@ class MainActivity : Activity() {
 
         wv = findViewById(R.id.webview)!!
         setupQuickCss()
-        explodeAndroid()
         wv!!.setWebViewClient(VWebviewClient())
         wv!!.setWebChromeClient(VChromeClient(this))
         if (sPrefs.getBoolean("desktopMode", false)) {
@@ -202,36 +199,48 @@ class MainActivity : Activity() {
         s.domStorageEnabled = true
         s.allowFileAccess = true
 
+        val discordUrl = mapOf(
+            "stable" to "https://discord.com/app",
+            "ptb" to "https://discord.com/app",
+            "oneko" to "https://discord.com/app"
+        )[sPrefs.getString("discordBranch", "stable")]!!
+
         if (!sPrefs.getBoolean("safeMode", false)) {
             wv?.addJavascriptInterface(VencordNative(this, wv!!), "VencordMobileNative")
-            try {
-                fetchVencord(this)
-            } catch (_: IOException) {
-
-            }
+            // Load the Vencord bundle on a background thread so the UI stays responsive.
+            // Discord only starts loading once the bundle is ready — the splash GIF plays
+            // in the meantime, which is exactly what it's there for.
+            Thread {
+                try {
+                    fetchVencord(this)
+                } catch (_: IOException) {}
+                runOnUiThread {
+                    val startIntent = intent
+                    if (startIntent.action == Intent.ACTION_VIEW) {
+                        val data = startIntent.data
+                        if (data != null) handleUrl(data)
+                    } else {
+                        wv!!.loadUrl(discordUrl)
+                    }
+                    checkUpdates()
+                    wvInitialized = true
+                }
+            }.start()
         } else {
             Toast.makeText(this, "Safe mode enabled, Vencord won't be loaded", Toast.LENGTH_SHORT)
                 .show()
             editor.putBoolean("safeMode", false)
             editor.apply()
+            val startIntent = intent
+            if (startIntent.action == Intent.ACTION_VIEW) {
+                val data = startIntent.data
+                if (data != null) handleUrl(data)
+            } else {
+                wv!!.loadUrl(discordUrl)
+            }
+            checkUpdates()
+            wvInitialized = true
         }
-
-        val intent = intent
-        if (intent.action == Intent.ACTION_VIEW) {
-            val data = intent.data
-            if (data != null) handleUrl(intent.data)
-        } else {
-            wv!!.loadUrl(
-                mapOf(
-                    "stable" to "https://discord.com/app",
-                    "ptb" to "https://discord.com/app",
-                    "oneko" to "https://discord.com/app"
-                )[sPrefs.getString("discordBranch", "stable")]!!
-            )
-        }
-
-        checkUpdates()
-        wvInitialized = true
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -254,14 +263,6 @@ class MainActivity : Activity() {
             val result = WebChromeClient.FileChooserParams.parseResult(resultCode, intent)
             callback.onReceiveValue(result)
         }
-    }
-
-    private fun explodeAndroid() {
-        StrictMode.setThreadPolicy(
-            ThreadPolicy.Builder() // trolley
-                .permitNetwork()
-                .build()
-        )
     }
 
     private fun handleUrl(url: Uri?) {

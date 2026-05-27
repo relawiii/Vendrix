@@ -1,4 +1,4 @@
-# VendroidEnhanced
+# Vendrix
 
 An actively maintained fork of Vendroid — a Discord client that loads the mobile
 website and injects Vencord — now with a **custom plugin system** and
@@ -106,6 +106,11 @@ All settings apply live with a preview in the plugin settings panel.
 - **Manually** from the Actions tab
 
 Commits the updated bundle back to the repo automatically.
+
+`.github/workflows/android-build.yml` runs:
+- **On every push** and **pull request**
+- Builds `app/build/outputs/apk/release/app-release-unsigned.apk`
+- Uploads the APK as a workflow artifact for easy download
 
 ---
 

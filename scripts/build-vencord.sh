@@ -2,16 +2,21 @@
 # =============================================================================
 #  VendroidEnhanced — Vencord Build Script
 #
-#  1. Pulls the latest official Vencord repo
-#  2. Runs the compatibility checker on every plugin in vencord-plugins/
-#  3. Copies those plugins into Vencord's src/plugins/
-#  4. Builds Vencord (browser bundle)
-#  5. Writes the output to app/src/main/res/raw/vencord_bundle.js
+#  1. Pulls the latest official Vencord repo (all stock plugins stay)
+#  2. Clones the external vendrix-plugins repo (PLUGINS_REPO env var)
+#  3. Runs the compatibility checker on every custom plugin
+#  4. Copies custom plugins into Vencord's src/plugins/ alongside official ones
+#  5. Builds Vencord (browser bundle)
+#  6. Writes the output to app/src/main/res/raw/vencord_bundle.js
 #
 #  Usage:
 #    ./scripts/build-vencord.sh            # normal build
-#    ./scripts/build-vencord.sh --no-cache # force re-clone
+#    ./scripts/build-vencord.sh --no-cache # force re-clone Vencord + plugins
 #    ./scripts/build-vencord.sh --skip-ts  # skip TypeScript type check (faster)
+#
+#  Required env:
+#    PLUGINS_REPO  — git URL of the vendrix-plugins repo
+#                    e.g. https://github.com/yourorg/vendrix-plugins
 # =============================================================================
 set -euo pipefail
 
@@ -30,7 +35,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/.vencord-build"
 VENCORD_DIR="$BUILD_DIR/Vencord"
-PLUGINS_SRC="$REPO_ROOT/vencord-plugins"
+PLUGINS_REPO="${PLUGINS_REPO:-}"          # git URL — set via env or workflow secret
+PLUGINS_DIR="$BUILD_DIR/vendrix-plugins"  # cloned here at build time
 OUTPUT_FILE="$REPO_ROOT/app/src/main/res/raw/vencord_bundle.js"
 
 # ─── Colours ──────────────────────────────────────────────────────────────────
@@ -78,6 +84,29 @@ fi
 VENCORD_COMMIT=$(git -C "$VENCORD_DIR" rev-parse --short HEAD)
 success "Vencord @ $VENCORD_COMMIT"
 
+# ─── Clone or update vendrix-plugins ─────────────────────────────────────────
+if [[ -z "$PLUGINS_REPO" ]]; then
+    die "PLUGINS_REPO is not set — provide your vendrix-plugins git URL"
+fi
+
+if [[ "$NO_CACHE" == "true" && -d "$PLUGINS_DIR" ]]; then
+    info "Removing cached vendrix-plugins (--no-cache)..."
+    rm -rf "$PLUGINS_DIR"
+fi
+
+if [[ ! -d "$PLUGINS_DIR/.git" ]]; then
+    info "Cloning vendrix-plugins..."
+    git clone --depth=1 "$PLUGINS_REPO" "$PLUGINS_DIR"
+else
+    info "Updating vendrix-plugins to latest..."
+    cd "$PLUGINS_DIR"
+    git fetch --depth=1 origin main
+    git reset --hard origin/main
+fi
+
+PLUGINS_COMMIT=$(git -C "$PLUGINS_DIR" rev-parse --short HEAD)
+success "vendrix-plugins @ $PLUGINS_COMMIT"
+
 # ─── Install Vencord dependencies ─────────────────────────────────────────────
 info "Installing Vencord dependencies..."
 cd "$VENCORD_DIR"
@@ -91,9 +120,9 @@ node "$SCRIPT_DIR/check-compat.js"
 # check-compat.js exits 1 on hard errors, so we'll never reach here on failure
 
 # ─── Copy custom plugins ─────────────────────────────────────────────────────
-if [[ -d "$PLUGINS_SRC" ]]; then
+if [[ -d "$PLUGINS_DIR" ]]; then
     PLUGIN_COUNT=0
-    for plugin_dir in "$PLUGINS_SRC"/*/; do
+    for plugin_dir in "$PLUGINS_DIR"/*/; do
         [[ -d "$plugin_dir" ]] || continue
         plugin_name=$(basename "$plugin_dir")
         dest="$VENCORD_DIR/src/plugins/$plugin_name"
@@ -109,7 +138,7 @@ if [[ -d "$PLUGINS_SRC" ]]; then
     done
     success "Copied $PLUGIN_COUNT custom plugin(s) into Vencord"
 else
-    warn "No vencord-plugins/ directory found — building stock Vencord"
+    warn "vendrix-plugins dir not found — building stock Vencord"
 fi
 
 # ─── Build ────────────────────────────────────────────────────────────────────
@@ -128,7 +157,7 @@ if [[ "$SKIP_TS" == "true" ]]; then
     "
 fi
 
-pnpm build
+pnpm buildWeb
 
 if [[ ! -f "$VENCORD_DIR/dist/browser.js" ]]; then
     die "Build succeeded but dist/browser.js not found — something went wrong"
@@ -144,7 +173,7 @@ BUNDLE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     echo "// VendroidEnhanced custom Vencord bundle"
     echo "// Built: $BUNDLE_DATE"
     echo "// Vencord commit: $VENCORD_COMMIT"
-    echo "// Custom plugins: $(ls "$PLUGINS_SRC" 2>/dev/null | tr '\n' ' ' || echo 'none')"
+    echo "// Custom plugins: $(ls "$PLUGINS_DIR" 2>/dev/null | tr '\n' ' ' || echo 'none')"
     cat "$VENCORD_DIR/dist/browser.js"
 } > "$OUTPUT_FILE"
 

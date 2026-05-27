@@ -51,6 +51,8 @@ jobs:
 
       # ── Build ────────────────────────────────────────────────────────────
       - name: Run build-vencord.sh
+        env:
+          PLUGINS_REPO: ${{ secrets.PLUGINS_REPO_URL }}
         run: |
           chmod +x scripts/build-vencord.sh
           EXTRA=""
