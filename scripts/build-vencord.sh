@@ -128,7 +128,7 @@ if [[ "$SKIP_TS" == "true" ]]; then
     "
 fi
 
-pnpm build
+pnpm buildWeb
 
 if [[ ! -f "$VENCORD_DIR/dist/browser.js" ]]; then
     die "Build succeeded but dist/browser.js not found — something went wrong"

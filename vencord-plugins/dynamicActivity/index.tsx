@@ -17,6 +17,7 @@ import {
     useEffect,
     useState,
 } from "@webpack/common";
+import { ChannelType } from "@vencord/discord-types/enums";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,17 +27,6 @@ const enum ActivityType {
     LISTENING = 2,
     WATCHING  = 3,
     COMPETING = 5,
-}
-
-const enum ChannelType {
-    GUILD_TEXT          = 0,
-    DM                  = 1,
-    GUILD_VOICE         = 2,
-    GROUP_DM            = 3,
-    GUILD_CATEGORY      = 4,
-    GUILD_ANNOUNCEMENT  = 5,
-    GUILD_STAGE_VOICE   = 13,
-    GUILD_FORUM         = 15,
 }
 
 const enum Mode {
