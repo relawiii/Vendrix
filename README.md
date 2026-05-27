@@ -107,6 +107,11 @@ All settings apply live with a preview in the plugin settings panel.
 
 Commits the updated bundle back to the repo automatically.
 
+`.github/workflows/android-build.yml` runs:
+- **On every push** and **pull request**
+- Builds `app/build/outputs/apk/release/app-release-unsigned.apk`
+- Uploads the APK as a workflow artifact for easy download
+
 ---
 
 ## 🔍 Compatibility checker
