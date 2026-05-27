@@ -1,4 +1,4 @@
-# VendroidEnhanced
+# Vendrix
 
 An actively maintained fork of Vendroid — a Discord client that loads the mobile
 website and injects Vencord — now with a **custom plugin system** and
