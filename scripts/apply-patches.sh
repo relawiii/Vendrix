@@ -1,1 +1,404 @@
+#!/usr/bin/env bash
+# patches vencord with the stuff equicord plugins need.
+# runs after pnpm install, before pnpm buildWeb.
+# called automatically by build-vencord.sh -- set VENCORD_DIR before running manually.
+set -euo pipefail
 
+VENCORD_DIR="${VENCORD_DIR:?VENCORD_DIR must be set}"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+info()    { echo -e "${CYAN}${BOLD}[patch]${RESET} $*"; }
+success() { echo -e "${GREEN}${BOLD}[patch ok]${RESET} $*"; }
+warn()    { echo -e "\033[0;33m${BOLD}[patch warn]${RESET} $*"; }
+die()     { echo -e "${RED}${BOLD}[patch fail]${RESET} $*" >&2; exit 1; }
+
+# --- 1. equicorddevs shim ---
+# lets equicord plugins reference authors without breaking the build.
+# looks up from vanilla Devs first, falls back to a placeholder if not found.
+info "injecting EquicordDevs shim into @utils/constants..."
+
+CONSTANTS="$VENCORD_DIR/src/utils/constants.ts"
+[[ -f "$CONSTANTS" ]] || die "constants.ts not found at $CONSTANTS"
+
+if ! grep -q "EquicordDevs" "$CONSTANTS"; then
+    cat >> "$CONSTANTS" << 'EOF'
+
+// vendrix: equicorddevs shim
+// makes equicord plugins compile on vanilla vencord -- looks up from Devs first,
+// falls back to a placeholder if the name isn't there.
+export const EquicordDevs: Record<string, Dev> = new Proxy({} as Record<string, Dev>, {
+    get(_, prop: string): Dev {
+        const match = Object.values(Devs).find((d: Dev) => d.name === prop);
+        return match ?? { name: String(prop), id: 0n };
+    }
+});
+EOF
+    success "EquicordDevs shim injected"
+else
+    info "EquicordDevs already present, skipping"
+fi
+
+# --- 2. managedstyle vite plugin ---
+# handles ?managed css imports used by equicord plugins.
+# instead of inlining css at build time, returns a runtime object with
+# enable() / disable() that injects or removes a <style> tag.
+info "injecting managedStyle Vite plugin..."
+
+PLUGIN_FILE="$VENCORD_DIR/scripts/vite/vendrixManagedStyle.mts"
+mkdir -p "$(dirname "$PLUGIN_FILE")"
+
+cat > "$PLUGIN_FILE" << 'EOF'
+// vendrix: handles ?managed css imports from equicord-style plugins.
+import { readFileSync } from "fs";
+import type { Plugin } from "vite";
+
+export function vendrixManagedStyle(): Plugin {
+    return {
+        name: "vendrix:managed-style",
+        enforce: "pre",
+        resolveId(id: string) {
+            if (id.endsWith("?managed")) return id;
+        },
+        load(id: string) {
+            if (!id.endsWith("?managed")) return;
+
+            const realPath = id.slice(0, -"?managed".length);
+            let css = "";
+            try { css = readFileSync(realPath, "utf-8"); } catch { /* file missing, use empty */ }
+
+            const escaped = css
+                .replace(/\\/g, "\\\\")
+                .replace(/`/g, "\\`")
+                .replace(/\$\{/g, "\\${");
+
+            return `
+const css = \`${escaped}\`;
+let el = null;
+export default {
+    css,
+    enable()  { if (el) return; el = Object.assign(document.createElement("style"), { textContent: css }); document.head.appendChild(el); },
+    disable() { el?.remove(); el = null; }
+};`;
+        }
+    };
+}
+EOF
+
+# find every vite config in the repo and patch each one
+PATCHED=0
+while IFS= read -r cfg; do
+    if grep -q "vendrixManagedStyle\|vendrix:managed-style" "$cfg" 2>/dev/null; then
+        info "  already patched: $cfg"
+        continue
+    fi
+
+    # figure out the relative path from this config to the plugin module
+    CFG_DIR="$(dirname "$cfg")"
+    REL=$(python3 -c "import os.path; print(os.path.relpath('$PLUGIN_FILE', '$CFG_DIR'))" 2>/dev/null \
+        || node -e "const p=require('path');process.stdout.write(p.relative('$CFG_DIR','$PLUGIN_FILE'))")
+
+    # write the patcher to a temp file to avoid heredoc expansion issues
+    PATCHER=$(mktemp /tmp/vendrix-patcher-XXXXXX.js)
+    cat > "$PATCHER" << PATCHEOF
+const fs = require("fs");
+const src_path = "$cfg";
+const rel = "./${REL}".replace(/\.mts$/, ".mjs");
+let src = fs.readFileSync(src_path, "utf-8");
+
+if (!src.includes("vendrixManagedStyle")) {
+    src = 'import { vendrixManagedStyle } from "' + rel + '";\n' + src;
+}
+if (src.includes("plugins:") && !src.includes("vendrixManagedStyle()")) {
+    src = src.replace(/(plugins\s*:\s*\[)/, "\$1\n        vendrixManagedStyle(),");
+}
+
+fs.writeFileSync(src_path, src);
+console.log("  patched: $cfg");
+PATCHEOF
+    node "$PATCHER"
+    rm -f "$PATCHER"
+    PATCHED=$((PATCHED + 1))
+done < <(find "$VENCORD_DIR" -maxdepth 3 \( \
+    -name "*.vite.config.mts" \
+    -o -name "*.vite.config.ts" \
+    -o -name "vite.config.mts" \
+    -o -name "vite.config.ts" \
+    -o -name "vite.config.mjs" \
+    -o -name "vite.config.js" \
+\) 2>/dev/null)
+
+if [[ $PATCHED -eq 0 ]]; then
+    warn "no vite config found -- css from ?managed imports will be statically inlined, enable/disable will be no-ops"
+    SHIM="$VENCORD_DIR/src/plugins/_vendrix_managed_shim.ts"
+    cat > "$SHIM" << 'EOF'
+// vendrix shim -- placeholder so ?managed imports don't cause a build error.
+// auto-generated by apply-patches.sh, do not edit.
+EOF
+fi
+
+if [[ $PATCHED -gt 0 ]]; then
+    success "managedStyle plugin injected into $PATCHED vite config(s)"
+fi
+
+# --- 3. audioplayer api ---
+# vanilla vencord doesn't have this at all, so we create the whole file from scratch.
+info "creating AudioPlayer API..."
+
+AUDIO_PLAYER="$VENCORD_DIR/src/api/AudioPlayer.ts"
+API_INDEX="$VENCORD_DIR/src/api/index.ts"
+
+if ! grep -q "createAudioPlayer" "$AUDIO_PLAYER" 2>/dev/null; then
+    cat > "$AUDIO_PLAYER" << 'EOF'
+// vendrix: full AudioPlayer API shim
+// vanilla vencord doesn't ship this -- we create it so equicord plugins that import
+// from @api/AudioPlayer work without changes.
+
+import { findByPropsLazy } from "@webpack";
+
+// grab discord's internal sound player
+const SoundUtils = findByPropsLazy("playSound", "createSound");
+
+export interface AudioPlayerInterface {
+    play(): void;
+    stop(): void;
+    readonly sound: string;
+}
+
+export interface CreateAudioPlayerOptions {
+    volume?: number;
+    onEnded?: () => void;
+}
+
+const KNOWN_AUDIO_NAMES = [
+    "bop_message1","bop_message2","bop_message3",
+    "call_calling","call_ringing","call_ringing_beat",
+    "deafen","discodo","disconnect","high_five","human_man","interact",
+    "in_call_text_message","mention1","mention2","mention3","mute",
+    "navigation_backdrop_1","navigation_backdrop_2","overlapping_boop",
+    "outgoing_ring","ptt_start","ptt_stop","reconnect","request_to_speak",
+    "stream_started","stream_user_joined","stream_user_left",
+    "subtle_1","subtle_2","undeafen","unmute","vibing_wumpus",
+    "window_open","window_close","wumpus_tune",
+] as const;
+
+// returns all known discord notification sound names
+export function defaultAudioNames(): string[] {
+    return [...KNOWN_AUDIO_NAMES];
+}
+
+// plays a sound by name at the given volume (0-100)
+export function playAudio(sound: string, options: { volume?: number; } = {}): Promise<void> {
+    return new Promise(resolve => {
+        try {
+            SoundUtils.playSound(sound, (options.volume ?? 100) / 100);
+        } catch { /* sound not found or module not ready */ }
+        resolve();
+    });
+}
+
+// creates a controllable player with play/stop lifecycle
+export function createAudioPlayer(sound: string, options: CreateAudioPlayerOptions = {}): AudioPlayerInterface {
+    let stopped = false;
+    return {
+        sound,
+        play() {
+            if (stopped) return;
+            playAudio(sound, { volume: options.volume ?? 100 })
+                .then(() => { if (!stopped) options.onEnded?.(); })
+                .catch(() => {});
+        },
+        stop() { stopped = true; }
+    };
+}
+EOF
+    success "AudioPlayer API created"
+else
+    info "AudioPlayer already has createAudioPlayer, skipping"
+fi
+
+# make sure the api index exports it so @api/AudioPlayer resolves correctly
+if [[ -f "$API_INDEX" ]] && ! grep -q "AudioPlayer" "$API_INDEX"; then
+    echo 'export * from "./AudioPlayer";' >> "$API_INDEX"
+    success "AudioPlayer registered in api/index.ts"
+fi
+
+# register AudioPlayerAPI as a known plugin dependency type if the union exists
+TYPES_FILE="$VENCORD_DIR/src/utils/types.ts"
+if [[ -f "$TYPES_FILE" ]] && ! grep -q "AudioPlayerAPI" "$TYPES_FILE"; then
+    sed -i 's/\(type PluginDependency = \)\(.*\)$/\1"AudioPlayerAPI" | \2/' "$TYPES_FILE" 2>/dev/null || true
+fi
+
+# --- 4. ServerListAPI shim ---
+# vanilla vencord's browser build doesn't include ServerListAPI (it's desktop-only).
+# we add no-op stubs so plugins that depend on it don't get blocked from enabling.
+info "adding ServerListAPI shim..."
+
+SERVER_LIST_API="$VENCORD_DIR/src/api/ServerList.ts"
+
+if ! grep -q "ServerListRenderPosition" "$SERVER_LIST_API" 2>/dev/null; then
+    cat > "$SERVER_LIST_API" << 'EOF'
+// vendrix: ServerListAPI shim
+// The real ServerListAPI inserts components into Electron's server list sidebar.
+// On Android/WebView there is no sidebar, so these are safe no-ops that let
+// plugins with dependencies: ["ServerListAPI"] enable without errors.
+
+export enum ServerListRenderPosition {
+    Above = "above",
+    In = "in",
+    Below = "below",
+}
+
+export function addServerListElement(_position: ServerListRenderPosition, _renderFn: () => any): void {
+    // no-op on mobile
+}
+
+export function removeServerListElement(_position: ServerListRenderPosition, _renderFn: () => any): void {
+    // no-op on mobile
+}
+EOF
+    success "ServerListAPI shim created"
+else
+    info "ServerListAPI already present, skipping"
+fi
+
+if [[ -f "$API_INDEX" ]] && ! grep -q "ServerList" "$API_INDEX"; then
+    echo 'export * from "./ServerList";' >> "$API_INDEX"
+    success "ServerListAPI registered in api/index.ts"
+fi
+
+# register ServerListAPI as a known plugin dependency type
+if [[ -f "$TYPES_FILE" ]] && ! grep -q "ServerListAPI" "$TYPES_FILE"; then
+    sed -i 's/\(type PluginDependency = \)\(.*\)$/\1"ServerListAPI" | \2/' "$TYPES_FILE" 2>/dev/null || true
+fi
+
+# --- 5. discord-types enum shims ---
+# vanilla vencord's bundled discord-types doesn't export QuestTaskType or QuestRewardType.
+# we add them to the enums index so the plugin's imports resolve.
+info "adding QuestTaskType and QuestRewardType to discord-types enums..."
+
+ENUMS_INDEX="$VENCORD_DIR/packages/discord-types/enums/index.ts"
+if [[ -f "$ENUMS_INDEX" ]] && ! grep -q "QuestTaskType" "$ENUMS_INDEX"; then
+    cat >> "$ENUMS_INDEX" << 'EOF'
+
+// vendrix: quest enum shims -- not exported by vanilla vencord's discord-types
+export enum QuestTaskType {
+    WATCH_VIDEO = "WATCH_VIDEO",
+    WATCH_VIDEO_ON_MOBILE = "WATCH_VIDEO_ON_MOBILE",
+    ACHIEVEMENT_IN_ACTIVITY = "ACHIEVEMENT_IN_ACTIVITY",
+    ACHIEVEMENT_IN_GAME = "ACHIEVEMENT_IN_GAME",
+    PLAY_ACTIVITY = "PLAY_ACTIVITY",
+    PLAY_ON_DESKTOP = "PLAY_ON_DESKTOP",
+    PLAY_ON_DESKTOP_V2 = "PLAY_ON_DESKTOP_V2",
+    STREAM_ON_DESKTOP = "STREAM_ON_DESKTOP",
+    PLAY_ON_PLAYSTATION = "PLAY_ON_PLAYSTATION",
+    PLAY_ON_XBOX = "PLAY_ON_XBOX",
+}
+
+export enum QuestRewardType {
+    REWARD_CODE = "REWARD_CODE",
+    IN_GAME = "IN_GAME",
+    COLLECTIBLE = "COLLECTIBLE",
+    VIRTUAL_CURRENCY = "VIRTUAL_CURRENCY",
+    FRACTIONAL_PREMIUM = "FRACTIONAL_PREMIUM",
+}
+EOF
+    success "QuestTaskType and QuestRewardType added to discord-types enums"
+else
+    info "quest enums already present, skipping"
+fi
+
+# --- 6. QuestStore shim ---
+# vanilla vencord doesn't export QuestStore from @webpack/common.
+# we find it at runtime using findByPropsLazy and re-export it from the common index.
+info "adding QuestStore shim to @webpack/common..."
+
+WEBPACK_COMMON="$VENCORD_DIR/src/webpack/common/index.ts"
+if [[ -f "$WEBPACK_COMMON" ]] && ! grep -q "QuestStore" "$WEBPACK_COMMON"; then
+    # write the store shim as its own file so we don't pollute the common index directly
+    STORES_SHIM="$VENCORD_DIR/src/webpack/common/questStoreShim.ts"
+    cat > "$STORES_SHIM" << 'EOF'
+// vendrix: QuestStore shim
+// vanilla vencord doesn't expose QuestStore in @webpack/common, so we find it ourselves.
+import { findByPropsLazy } from "@webpack";
+
+export const QuestStore: {
+    getQuest(id: string): any;
+    quests: Map<string, any>;
+    excludedQuests: Map<string, any>;
+} = findByPropsLazy("getQuest", "quests");
+EOF
+    echo 'export { QuestStore } from "./questStoreShim";' >> "$WEBPACK_COMMON"
+    success "QuestStore shim added to @webpack/common"
+else
+    info "QuestStore already present, skipping"
+fi
+
+# --- 7. definePlugin + OptionType named-export shims ---
+# In newer Vencord, definePlugin is only the DEFAULT export from @utils/types.
+# Plugins that were written against older Vencord use the NAMED import form:
+#   import { definePlugin, OptionType } from "@utils/types";
+# esbuild treats `export default` and `export { name }` as different things, so
+# even though TypeScript is happy the bundler errors with "No matching export".
+# We append named-export aliases to types.ts so both import styles work.
+info "patching @utils/types to add named exports for definePlugin / OptionType..."
+
+TYPES_FILE="$VENCORD_DIR/src/utils/types.ts"
+[[ -f "$TYPES_FILE" ]] || die "types.ts not found at $TYPES_FILE"
+
+TYPES_PATCH_NEEDED=false
+
+# --- definePlugin ---
+# Only a named export satisfies `import { definePlugin }`.
+# `export default definePlugin` or `export default function definePlugin` does NOT.
+NAMED_DEFINE=$(grep -cE '^export (function|const|let|var) definePlugin\b|export \{[^}]*\bdefinePlugin\b' \
+    "$TYPES_FILE" 2>/dev/null || true)
+
+if [[ "$NAMED_DEFINE" -eq 0 ]]; then
+    if grep -qE 'export default (function )?definePlugin' "$TYPES_FILE"; then
+        # Default export exists but no named export — add the alias.
+        {
+            echo ""
+            echo "// vendrix: named export alias so { definePlugin } imports work"
+            echo "export { definePlugin };"
+        } >> "$TYPES_FILE"
+        TYPES_PATCH_NEEDED=true
+    elif [[ -f "$VENCORD_DIR/src/utils/definePlugin.ts" ]]; then
+        # definePlugin lives in its own file — re-export from there.
+        {
+            echo ""
+            echo "// vendrix: re-export definePlugin for { definePlugin } imports"
+            echo 'export { definePlugin } from "./definePlugin";'
+        } >> "$TYPES_FILE"
+        TYPES_PATCH_NEEDED=true
+    else
+        warn "definePlugin not found in types.ts or definePlugin.ts — skipping"
+    fi
+fi
+
+# --- OptionType ---
+NAMED_OPTION=$(grep -cE '^export (enum|const) OptionType\b|export \{[^}]*\bOptionType\b' \
+    "$TYPES_FILE" 2>/dev/null || true)
+
+if [[ "$NAMED_OPTION" -eq 0 ]]; then
+    OT_SRC=$(grep -rl "^export enum OptionType\|^export const OptionType" \
+        "$VENCORD_DIR/src/utils/" 2>/dev/null | grep -v "types.ts" | head -1 || true)
+    if [[ -n "$OT_SRC" ]]; then
+        OT_REL="./$(basename "$OT_SRC" .ts)"
+        {
+            echo "// vendrix: re-export OptionType for { OptionType } imports"
+            echo "export { OptionType } from \"$OT_REL\";"
+        } >> "$TYPES_FILE"
+        TYPES_PATCH_NEEDED=true
+    else
+        warn "OptionType not found outside types.ts — skipping"
+    fi
+fi
+
+if [[ "$TYPES_PATCH_NEEDED" == "true" ]]; then
+    success "named exports added to @utils/types"
+else
+    info "definePlugin and OptionType already have named exports in types.ts, skipping"
+fi
+
+echo ""
+echo -e "${GREEN}${BOLD}all patches applied.${RESET}"
