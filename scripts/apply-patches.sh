@@ -333,5 +333,65 @@ else
     info "QuestStore already present, skipping"
 fi
 
+# --- 7. definePlugin + OptionType backwards-compat re-export ---
+# Newer Vencord moved definePlugin (and kept OptionType) out of @utils/types into
+# separate files.  Plugins that were written against the old layout still import
+# from "@utils/types", so we add re-exports so those imports resolve without
+# touching every plugin file.
+info "patching @utils/types to re-export definePlugin / OptionType..."
+
+TYPES_FILE="$VENCORD_DIR/src/utils/types.ts"
+[[ -f "$TYPES_FILE" ]] || die "types.ts not found at $TYPES_FILE"
+
+TYPES_PATCH_NEEDED=false
+
+# Check definePlugin
+if ! grep -q "export.*definePlugin" "$TYPES_FILE"; then
+    # Confirm where it actually lives in this Vencord checkout
+    if [[ -f "$VENCORD_DIR/src/utils/definePlugin.ts" ]]; then
+        DEFINE_PLUGIN_SRC="./definePlugin"
+    else
+        # Fallback: scan for the canonical export location
+        DEFINE_PLUGIN_SRC=$(grep -rl "^export function definePlugin\|^export const definePlugin" \
+            "$VENCORD_DIR/src/utils/" 2>/dev/null | head -1)
+        if [[ -n "$DEFINE_PLUGIN_SRC" ]]; then
+            # Turn absolute path into a relative import usable from types.ts
+            DEFINE_PLUGIN_SRC="./$(basename "$DEFINE_PLUGIN_SRC" .ts)"
+        else
+            warn "definePlugin source file not found — skipping definePlugin re-export"
+            DEFINE_PLUGIN_SRC=""
+        fi
+    fi
+
+    if [[ -n "$DEFINE_PLUGIN_SRC" ]]; then
+        {
+            echo ""
+            echo "// vendrix: re-export definePlugin for plugins that import from @utils/types"
+            echo "export { definePlugin } from \"$DEFINE_PLUGIN_SRC\";"
+        } >> "$TYPES_FILE"
+        TYPES_PATCH_NEEDED=true
+    fi
+fi
+
+# Check OptionType — also sometimes missing from types.ts in newer Vencord
+if ! grep -q "export.*OptionType\|export enum OptionType" "$TYPES_FILE"; then
+    OT_SRC=$(grep -rl "export enum OptionType\|export const OptionType" \
+        "$VENCORD_DIR/src/utils/" 2>/dev/null | head -1)
+    if [[ -n "$OT_SRC" && "$OT_SRC" != "$TYPES_FILE" ]]; then
+        OT_REL="./$(basename "$OT_SRC" .ts)"
+        {
+            echo "// vendrix: re-export OptionType for plugins that import from @utils/types"
+            echo "export { OptionType } from \"$OT_REL\";"
+        } >> "$TYPES_FILE"
+        TYPES_PATCH_NEEDED=true
+    fi
+fi
+
+if [[ "$TYPES_PATCH_NEEDED" == "true" ]]; then
+    success "definePlugin / OptionType re-exported from @utils/types"
+else
+    info "definePlugin and OptionType already present in types.ts, skipping"
+fi
+
 echo ""
 echo -e "${GREEN}${BOLD}all patches applied.${RESET}"
