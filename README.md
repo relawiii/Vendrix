@@ -2,7 +2,7 @@
 
 Vendrix is a fork of [Vendroid](https://github.com/Vencord/Vendroid) — a Discord client for Android that loads the mobile website and injects Vencord — with a custom plugin system, performance improvements, and automated Vencord builds.
 
-[![Static Badge](https://img.shields.io/badge/Download%20Vendrix-black?style=for-the-badge&logo=android)](https://github.com/relawiii/Vendrix/releases/latest) [Static Badge](https://img.shields.io/badge/Website-Vendrix-blue)
+[![Static Badge](https://img.shields.io/badge/Download%20Vendrix-black?style=for-the-badge&logo=android)](https://github.com/relawiii/Vendrix/releases/latest) [![Static Badge](https://img.shields.io/badge/Website-Vendrix-blue)]
 
 ---
 
