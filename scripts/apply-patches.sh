@@ -228,7 +228,50 @@ if [[ -f "$TYPES_FILE" ]] && ! grep -q "AudioPlayerAPI" "$TYPES_FILE"; then
     sed -i 's/\(type PluginDependency = \)\(.*\)$/\1"AudioPlayerAPI" | \2/' "$TYPES_FILE" 2>/dev/null || true
 fi
 
-# --- 4. discord-types enum shims ---
+# --- 4. ServerListAPI shim ---
+# vanilla vencord's browser build doesn't include ServerListAPI (it's desktop-only).
+# we add no-op stubs so plugins that depend on it don't get blocked from enabling.
+info "adding ServerListAPI shim..."
+
+SERVER_LIST_API="$VENCORD_DIR/src/api/ServerList.ts"
+
+if ! grep -q "ServerListRenderPosition" "$SERVER_LIST_API" 2>/dev/null; then
+    cat > "$SERVER_LIST_API" << 'EOF'
+// vendrix: ServerListAPI shim
+// The real ServerListAPI inserts components into Electron's server list sidebar.
+// On Android/WebView there is no sidebar, so these are safe no-ops that let
+// plugins with dependencies: ["ServerListAPI"] enable without errors.
+
+export enum ServerListRenderPosition {
+    Above = "above",
+    In = "in",
+    Below = "below",
+}
+
+export function addServerListElement(_position: ServerListRenderPosition, _renderFn: () => any): void {
+    // no-op on mobile
+}
+
+export function removeServerListElement(_position: ServerListRenderPosition, _renderFn: () => any): void {
+    // no-op on mobile
+}
+EOF
+    success "ServerListAPI shim created"
+else
+    info "ServerListAPI already present, skipping"
+fi
+
+if [[ -f "$API_INDEX" ]] && ! grep -q "ServerList" "$API_INDEX"; then
+    echo 'export * from "./ServerList";' >> "$API_INDEX"
+    success "ServerListAPI registered in api/index.ts"
+fi
+
+# register ServerListAPI as a known plugin dependency type
+if [[ -f "$TYPES_FILE" ]] && ! grep -q "ServerListAPI" "$TYPES_FILE"; then
+    sed -i 's/\(type PluginDependency = \)\(.*\)$/\1"ServerListAPI" | \2/' "$TYPES_FILE" 2>/dev/null || true
+fi
+
+# --- 5. discord-types enum shims ---
 # vanilla vencord's bundled discord-types doesn't export QuestTaskType or QuestRewardType.
 # we add them to the enums index so the plugin's imports resolve.
 info "adding QuestTaskType and QuestRewardType to discord-types enums..."
@@ -264,7 +307,7 @@ else
     info "quest enums already present, skipping"
 fi
 
-# --- 5. QuestStore shim ---
+# --- 6. QuestStore shim ---
 # vanilla vencord doesn't export QuestStore from @webpack/common.
 # we find it at runtime using findByPropsLazy and re-export it from the common index.
 info "adding QuestStore shim to @webpack/common..."
