@@ -85,3 +85,4 @@ Sets your Discord Rich Presence automatically based on what you're doing. Suppor
 
 - [Vendroid](https://github.com/Vencord/Vendroid) — original app by nin0dev
 - [Vencord](https://github.com/Vendicated/Vencord) — the client mod
+- [VendroidEnhanced] - enchanced original app
