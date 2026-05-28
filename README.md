@@ -1,126 +1,87 @@
 # Vendrix
 
-An actively maintained fork of Vendroid — a Discord client that loads the mobile
-website and injects Vencord — now with a **custom plugin system** and
-**automatic Vencord builds**.
+Vendrix is a fork of [Vendroid](https://github.com/Vencord/Vendroid) — a Discord client for Android that loads the mobile website and injects Vencord — with a custom plugin system, performance improvements, and automated Vencord builds.
 
-[website](https://vendroid.nin0.dev) · [download](https://vendroid.nin0.dev/download) · [faq](https://vendroid.nin0.dev/faq) · [support](https://discord.gg/6ckFahqUcd)
+[![Static Badge](https://img.shields.io/badge/Download%20Vendrix-black?style=for-the-badge&logo=android)](https://github.com/relawiii/Vendrix/releases/latest)
 
 ---
 
-## ✨ What's new in this fork
+Vendrix works by loading discord.com in a WebView and injecting Vencord on top of it. Custom plugins are pulled from a separate repo at build time and bundled directly into the APK alongside all official Vencord plugins.
 
-| Feature | Details |
+| | |
+|:--:|:--:|
+|![image](https://github.com/Vencord/Vendroid/assets/45497981/e6464167-78b1-4f38-8e96-bb355ea5bbc3)|![image](https://github.com/Vencord/Vendroid/assets/45497981/3f6b278e-f18d-4cae-964f-f357f06ca2bd)|
+
+## What's different from Vendroid
+
+| | |
 |---|---|
-| **DynamicActivity plugin** | Auto-detect status, custom RPC, rotating, scheduled, idle-aware |
-| **Embedded Vencord bundle** | Build script bakes plugins directly into the APK |
-| **Plugin compatibility checker** | Validates every plugin before building |
-| **Auto-build CI** | GitHub Actions rebuilds the bundle daily and on every plugin change |
+| **Custom plugins** | Pulled from an external repo at build time, merged with all official Vencord plugins |
+| **Embedded bundle** | Vencord is baked into the APK — no CDN download on first launch |
+| **Faster startup** | Bundle loads off the UI thread; sub-resources go through WebView's native stack |
+| **Debug APK CI** | GitHub Actions builds a debug APK on every push, no signing needed |
+| **Auto-bundle CI** | Bundle rebuilds daily and on every plugin change, committed back automatically |
 
----
+## Download
 
-## 🚀 Quick start (GitHub Codespaces)
+Visit the [latest release](https://github.com/relawiii/Vendrix/releases/latest), grab the APK and install it.
 
-1. Open in Codespaces — Node, pnpm, and git are pre-installed.
+> You may need to allow installs from unknown sources in your Android settings.
 
-2. Build the Vencord bundle (pulls latest Vencord + your plugins):
-   ```bash
-   ./scripts/build-vencord.sh
-   ```
-   Writes `app/src/main/res/raw/vencord_bundle.js` on success.
+## Building
 
-3. Build the APK:
-   ```bash
-   ./gradlew assembleRelease
-   ```
+Requires Node.js 18+, pnpm, git, and JDK 21.
 
-**Build flags:**
-- `--no-cache` — force re-clone Vencord
-- `--skip-ts` — skip TypeScript type check (faster)
+**1. Set your plugins repo URL** (in repo Settings → Secrets → Actions):
 
----
-
-## 🔌 Adding a plugin
-
-1. Create a folder in `vencord-plugins/`:
-   ```
-   vencord-plugins/
-     myPlugin/
-       index.tsx
-   ```
-
-2. Validate it:
-   ```bash
-   node scripts/check-compat.js
-   ```
-
-3. Rebuild:
-   ```bash
-   ./scripts/build-vencord.sh
-   ```
-
-### Plugin template
-
-```typescript
-import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType } from "@utils/types";
-
-const settings = definePluginSettings({
-    myOption: { type: OptionType.BOOLEAN, description: "Does something", default: true },
-});
-
-export default definePlugin({
-    name: "MyPlugin",
-    description: "What it does",
-    authors: [{ name: "YourName", id: 0n }],
-    settings,
-    start() {},
-    stop()  {},
-});
+```
+PLUGINS_REPO_URL = https://github.com/relawiii/vendrix-plugins
 ```
 
----
+**2. Build the Vencord bundle:**
 
-## 📦 DynamicActivity plugin
+```bash
+PLUGINS_REPO=https://github.com/relawiii/vendrix-plugins ./scripts/build-vencord.sh
+```
 
-Smart Rich Presence with 6 modes:
+Flags: `--no-cache` to force re-clone, `--skip-ts` to skip the TypeScript check.
 
-| Mode | Description |
-|---|---|
-| **Default** | Auto-detects: DMs, Group DMs, Voice/Stage, text channel, home screen |
-| **Custom** | Fixed activity — Playing/Watching/Listening/Streaming/Competing with name, details, state, images, 2 buttons, timestamp |
-| **Rotating** | Cycles through a JSON list of activities on a configurable interval (min 15s) |
-| **Scheduled** | Different activity at morning / afternoon / evening / night |
-| **Idle-Aware** | AFK status after N minutes idle; returns to Default/Custom/Rotating when active |
-| **Disabled** | No activity override |
+**3. Build the APK:**
 
-All settings apply live with a preview in the plugin settings panel.
+```bash
+./gradlew assembleDebug     # debug
+./gradlew assembleRelease   # release (unsigned)
+```
 
----
+## Custom plugins
 
-## ⚙️ Auto-build (GitHub Actions)
+Plugins live in a [separate repo](https://github.com/relawiii/vendrix-plugins). At build time, `build-vencord.sh` clones it and copies each plugin folder into Vencord's `src/plugins/` alongside all official plugins. The full merged set gets bundled into the APK.
 
-`.github/workflows/build-vencord.yml` runs:
-- **Daily at 3 AM UTC** — picks up new Vencord commits
-- **On every push** touching `vencord-plugins/` or `scripts/`
-- **Manually** from the Actions tab
+To add a plugin, drop a folder with an `index.tsx` into the plugins repo:
 
-Commits the updated bundle back to the repo automatically.
+```
+vendrix-plugins/
+  myPlugin/
+    index.tsx
+```
 
-`.github/workflows/android-build.yml` runs:
-- **On every push** and **pull request**
-- Builds `app/build/outputs/apk/release/app-release-unsigned.apk`
-- Uploads the APK as a workflow artifact for easy download
+The plugin must use `definePlugin()` with `name`, `description`, and `authors`.
 
----
+## Included plugins
 
-## 🔍 Compatibility checker
+### `dynamicActivity`
 
-`scripts/check-compat.js` checks each plugin for:
-- `index.ts` / `index.tsx` / `index.js` present
-- `definePlugin()` call with `name`, `description`, `authors`
-- No invalid import paths
-- No name collision with official Vencord plugins
-- TypeScript type-check via Vencord's `tsconfig.json`
+Sets your Discord Rich Presence automatically based on what you're doing. Supports six modes — auto-detection, custom, rotating, scheduled, idle-aware, and disabled — all configurable live from the plugin settings panel.
 
-Build exits with code 1 on any error.
+## CI
+
+| Workflow | Triggers | Output |
+|---|---|---|
+| `build-vencord.yml` | Daily 3 AM UTC, push to `scripts/`, manual | Updated `vencord_bundle.js` committed back |
+| `debug-apk.yml` | Every push | Debug APK artifact (7 day retention) |
+| `android-build.yml` | Every push + PR | Release APK artifact (14 day retention) |
+
+## Credits
+
+- [Vendroid](https://github.com/Vencord/Vendroid) — original app by nin0dev
+- [Vencord](https://github.com/Vendicated/Vencord) — the client mod

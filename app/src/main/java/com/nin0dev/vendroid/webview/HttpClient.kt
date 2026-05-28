@@ -21,6 +21,11 @@ object HttpClient {
     @JvmField
     var VencordMobileRuntime: String? = null
 
+    /** Show a Toast safely from any thread. */
+    private fun Activity.showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
+        runOnUiThread { Toast.makeText(this, message, duration).show() }
+    }
+
     /**
      * Returns true if the APK contains a custom-built Vencord bundle
      * (i.e. build-vencord.sh was run and wrote vencord_bundle.js).
@@ -54,7 +59,7 @@ object HttpClient {
             Log.i("VendroidEnhanced", "Loading custom-built Vencord bundle from APK resources")
             res.openRawResource(R.raw.vencord_bundle).use { VencordRuntime = readAsText(it) }
             if (BuildConfig.DEBUG) {
-                Toast.makeText(activity, "Loaded custom Vencord bundle from APK", Toast.LENGTH_SHORT).show()
+                activity.showToast("Loaded custom Vencord bundle from APK")
             }
             return
         }
@@ -67,7 +72,7 @@ object HttpClient {
 
         if (sPrefs.getInt("lastMajorUpdateThatUserHasUpdatedVencord", 0) < BuildConfig.VERSION_CODE) {
             if (BuildConfig.DEBUG)
-                Toast.makeText(activity, "App updated, re-downloading Vencord", Toast.LENGTH_LONG).show()
+                activity.showToast("App updated, re-downloading Vencord", Toast.LENGTH_LONG)
             vendroidFile.delete()
         }
 
@@ -75,11 +80,10 @@ object HttpClient {
         if ((customLocation != Constants.JS_BUNDLE_URL && customLocation != Constants.EQUICORD_BUNDLE_URL)
             || BuildConfig.DEBUG
         ) {
-            Toast.makeText(
-                activity,
+            activity.showToast(
                 "Debugging app or Vencord, bundle will be re-downloaded. Avoid on limited networks",
                 Toast.LENGTH_LONG
-            ).show()
+            )
             vendroidFile.delete()
         }
 

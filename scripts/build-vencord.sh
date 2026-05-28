@@ -111,6 +111,12 @@ success "vendrix-plugins @ $PLUGINS_COMMIT"
 info "Installing Vencord dependencies..."
 cd "$VENCORD_DIR"
 pnpm install --frozen-lockfile --silent
+
+# Install @vencord/discord-types for Equicord plugin compatibility
+if ! grep -q '"@vencord/discord-types"' package.json 2>/dev/null; then
+    info "Installing @vencord/discord-types..."
+    pnpm add --silent @vencord/discord-types || true  # non-fatal: patches provide fallback types
+fi
 success "Dependencies installed"
 
 # ─── Compatibility check ──────────────────────────────────────────────────────
@@ -140,6 +146,11 @@ if [[ -d "$PLUGINS_DIR" ]]; then
 else
     warn "vendrix-plugins dir not found — building stock Vencord"
 fi
+
+# ─── Apply Vendrix compatibility patches ─────────────────────────────────────
+info "Applying Vendrix compatibility patches..."
+VENCORD_DIR="$VENCORD_DIR" bash "$SCRIPT_DIR/apply-patches.sh"
+success "Patches applied"
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 info "Building Vencord browser bundle..."

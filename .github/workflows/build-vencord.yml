@@ -1,16 +1,9 @@
 name: Build Vencord Bundle
 
 on:
-  # Run every day at 3 AM UTC — picks up new Vencord commits automatically
   schedule:
     - cron: "0 3 * * *"
-  # Run on every push that touches a plugin or the build script
-  push:
-    paths:
-      - "vencord-plugins/**"
-      - "scripts/**"
-      - ".github/workflows/build-vencord.yml"
-  # Allow manual trigger from the Actions tab
+  push:                        # ← every push, no paths filter
   workflow_dispatch:
     inputs:
       no_cache:
@@ -19,19 +12,23 @@ on:
         default: "false"
         type: boolean
 
+# Cancel any in-progress bundle build for the same branch so the
+# latest push always wins, and nothing else starts until this finishes.
+concurrency:
+  group: vencord-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Vencord + custom plugins
     runs-on: ubuntu-latest
 
     steps:
-      # ── Checkout ─────────────────────────────────────────────────────────
       - name: Checkout VendroidEnhanced
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Node setup ───────────────────────────────────────────────────────
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
@@ -40,7 +37,6 @@ jobs:
       - name: Install pnpm
         run: npm install -g pnpm
 
-      # ── Cache Vencord clone between runs ─────────────────────────────────
       - name: Cache Vencord source
         if: ${{ inputs.no_cache != 'true' }}
         uses: actions/cache@v4
@@ -49,7 +45,6 @@ jobs:
           key: vencord-src-${{ hashFiles('scripts/build-vencord.sh') }}
           restore-keys: vencord-src-
 
-      # ── Build ────────────────────────────────────────────────────────────
       - name: Run build-vencord.sh
         env:
           PLUGINS_REPO: ${{ secrets.PLUGINS_REPO_URL }}
@@ -59,7 +54,6 @@ jobs:
           if [ "${{ inputs.no_cache }}" = "true" ]; then EXTRA="--no-cache"; fi
           ./scripts/build-vencord.sh $EXTRA
 
-      # ── Commit the updated bundle back to the repo ───────────────────────
       - name: Commit updated bundle
         run: |
           git config user.name  "github-actions[bot]"
@@ -70,10 +64,34 @@ jobs:
           git commit -m "chore: update Vencord bundle (vencord@${VENCORD_COMMIT}) [skip ci]"
           git push
 
-      # ── Upload bundle as a workflow artifact (for manual inspection) ──────
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
           name: vencord_bundle
           path: app/src/main/res/raw/vencord_bundle.js
           retention-days: 14
+
+  # ── Trigger your APK workflows after the bundle is committed ─────────────
+  trigger-apk-builds:
+    name: Trigger APK workflows
+    needs: build          # only runs after build succeeds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger APK workflow(s)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflows = [
+              "build-debug-apk.yml",    // ← replace with your actual filenames
+              "build-release-apk.yml",  // ← replace with your actual filenames
+            ];
+            for (const wf of workflows) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                workflow_id: wf,
+                ref: context.ref,
+              });
+              console.log(`Triggered ${wf}`);
+            }

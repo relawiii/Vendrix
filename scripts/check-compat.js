@@ -31,6 +31,8 @@ const VALID_MODULE_PREFIXES = [
     "@utils/",
     "@webpack/common",
     "@webpack",
+    "@components/",
+    "@vencord/discord-types", // Equicord typed Discord structures — added by Vendrix patches
     "discord-types",
     "react",
     "react-dom",
