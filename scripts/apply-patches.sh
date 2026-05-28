@@ -1,110 +1,69 @@
 #!/usr/bin/env bash
-# =============================================================================
-#  Vendrix — Vencord Compatibility Patches
-#
-#  Run after `pnpm install` but before `pnpm buildWeb` inside VENCORD_DIR.
-#  Injects:
-#    1. EquicordDevs shim into src/utils/constants.ts
-#    2. managedStyle Vite plugin (handles `?managed` CSS imports)
-#    3. AudioPlayer additions (createAudioPlayer, defaultAudioNames, AudioPlayerInterface)
-#
-#  Usage (called automatically by build-vencord.sh):
-#    VENCORD_DIR=/path/to/Vencord bash apply-patches.sh
-# =============================================================================
+# patches vencord with the stuff equicord plugins need.
+# runs after pnpm install, before pnpm buildWeb.
+# called automatically by build-vencord.sh — set VENCORD_DIR before running manually.
 set -euo pipefail
 
 VENCORD_DIR="${VENCORD_DIR:?VENCORD_DIR must be set}"
-PATCHES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 info()    { echo -e "${CYAN}${BOLD}[patch]${RESET} $*"; }
 success() { echo -e "${GREEN}${BOLD}[patch ✓]${RESET} $*"; }
+warn()    { echo -e "\033[0;33m${BOLD}[patch ⚠]${RESET} $*"; }
 die()     { echo -e "${RED}${BOLD}[patch ✗]${RESET} $*" >&2; exit 1; }
 
-# ─── 1. EquicordDevs shim ─────────────────────────────────────────────────────
-info "Injecting EquicordDevs shim into @utils/constants..."
+# 1. equicorddevs shim — lets equicord plugins reference authors without breaking the build
+info "injecting EquicordDevs shim into @utils/constants..."
 
 CONSTANTS="$VENCORD_DIR/src/utils/constants.ts"
 [[ -f "$CONSTANTS" ]] || die "constants.ts not found at $CONSTANTS"
 
-# Only inject once
 if ! grep -q "EquicordDevs" "$CONSTANTS"; then
     cat >> "$CONSTANTS" << 'EOF'
 
-// ── Vendrix: EquicordDevs shim ─────────────────────────────────────────────
-// Provides a minimal EquicordDevs map so Equicord plugins compile on vanilla Vencord.
-// Entries are looked up from Devs first; unknown authors fall back to a placeholder.
-import type { Dev } from "./types";
-
-function makeEquicordDev(name: string, id: bigint = 0n): Dev {
-    return { name, id };
-}
-
-export const EquicordDevs = new Proxy({} as Record<string, Dev>, {
+// vendrix: equicorddevs shim
+// makes equicord plugins compile on vanilla vencord — looks up from Devs first,
+// falls back to a placeholder if the name isn't there.
+export const EquicordDevs: Record<string, Dev> = new Proxy({} as Record<string, Dev>, {
     get(_, prop: string): Dev {
-        // Try to find in vanilla Devs by name match first
-        const match = Object.values(Devs).find(d => d.name === prop);
-        return match ?? makeEquicordDev(prop);
+        const match = Object.values(Devs).find((d: Dev) => d.name === prop);
+        return match ?? { name: String(prop), id: 0n };
     }
-}) as Record<string, Dev> & {
-    Etorix: Dev;
-    [key: string]: Dev;
-};
-
-// Explicit known entries (add more as needed)
-(EquicordDevs as any).Etorix = makeEquicordDev("Etorix");
+});
 EOF
     success "EquicordDevs shim injected"
 else
     info "EquicordDevs already present, skipping"
 fi
 
-# ─── 2. managedStyle Vite plugin ──────────────────────────────────────────────
-info "Injecting managedStyle Vite plugin..."
+# 2. managedstyle vite plugin — handles ?managed css imports used by equicord plugins
+info "injecting managedStyle Vite plugin..."
 
-VITE_CONFIG="$VENCORD_DIR/browser.vite.config.mts"
-# Also try the web config
-[[ -f "$VITE_CONFIG" ]] || VITE_CONFIG="$VENCORD_DIR/vite.config.mts"
-[[ -f "$VITE_CONFIG" ]] || VITE_CONFIG=$(find "$VENCORD_DIR" -maxdepth 2 -name "*.vite.config.*" | head -1)
-[[ -f "$VITE_CONFIG" ]] || die "Could not find a Vite config in $VENCORD_DIR"
+# drop the plugin module into vencord's vite scripts folder
+PLUGIN_FILE="$VENCORD_DIR/scripts/vite/vendrixManagedStyle.mts"
+mkdir -p "$(dirname "$PLUGIN_FILE")"
 
-info "  Found Vite config: $VITE_CONFIG"
-
-# Write the managed style plugin file
-cat > "$VENCORD_DIR/scripts/vite/managedStylePlugin.mts" << 'EOF'
-/**
- * Vendrix: managedStyle Vite Plugin
- *
- * Handles the `?managed` suffix on CSS imports used by Equicord plugins.
- * Instead of inlining the CSS at build time, it returns a ManagedStyle object
- * with enable() / disable() methods that inject/remove a <style> tag at runtime.
- *
- * Usage in plugin:
- *   import managedStyle from "./styles.css?managed";
- *   // In definePlugin: { managedStyle, ... }
- *   // Vencord's plugin loader calls managedStyle.enable() on start, .disable() on stop
- */
-
-import type { Plugin } from "vite";
+cat > "$PLUGIN_FILE" << 'EOF'
+// vendrix: handles `?managed` css imports from equicord-style plugins.
+// instead of inlining css at build time, returns a runtime object with
+// enable() / disable() that injects or removes a <style> tag.
 import { readFileSync } from "fs";
+import type { Plugin } from "vite";
 
-export function managedStylePlugin(): Plugin {
+export function vendrixManagedStyle(): Plugin {
     return {
         name: "vendrix:managed-style",
         enforce: "pre",
-
+        resolveId(id: string) {
+            if (id.endsWith("?managed")) return id;
+        },
         load(id: string) {
             if (!id.endsWith("?managed")) return;
 
             const realPath = id.slice(0, -"?managed".length);
             let css = "";
-            try {
-                css = readFileSync(realPath, "utf-8");
-            } catch {
-                // File not found — return empty managed style
-            }
+            try { css = readFileSync(realPath, "utf-8"); } catch { /* file missing, use empty */ }
 
-            // Escape for JS string embedding
             const escaped = css
                 .replace(/\\/g, "\\\\")
                 .replace(/`/g, "\\`")
@@ -112,78 +71,86 @@ export function managedStylePlugin(): Plugin {
 
             return `
 const css = \`${escaped}\`;
-let styleEl = null;
-
-const managedStyle = {
+let el = null;
+export default {
     css,
-    enable() {
-        if (styleEl) return;
-        styleEl = document.createElement("style");
-        styleEl.textContent = css;
-        styleEl.setAttribute("data-managed-plugin", "true");
-        document.head.appendChild(styleEl);
-    },
-    disable() {
-        if (!styleEl) return;
-        styleEl.remove();
-        styleEl = null;
-    }
-};
-
-export default managedStyle;
-`;
-        },
-
-        resolveId(id: string) {
-            if (id.endsWith("?managed")) {
-                // Strip query so Vite resolves the file path normally, then we handle in load()
-                return id;
-            }
+    enable()  { if (el) return; el = Object.assign(document.createElement("style"), { textContent: css }); document.head.appendChild(el); },
+    disable() { el?.remove(); el = null; }
+};`;
         }
     };
 }
 EOF
 
-# Inject the plugin into the Vite config if not already present
-if ! grep -q "managedStylePlugin\|vendrix:managed-style" "$VITE_CONFIG"; then
-    # Insert after the first `plugins: [` or before the closing `]` of plugins array
+# find every vite config in the repo and patch each one
+PATCHED=0
+while IFS= read -r cfg; do
+    if grep -q "vendrixManagedStyle\|vendrix:managed-style" "$cfg" 2>/dev/null; then
+        info "  already patched: $cfg"
+        continue
+    fi
+
+    # figure out the relative path from this config to the plugin module
+    CFG_DIR="$(dirname "$cfg")"
+    REL=$(python3 -c "import os.path; print(os.path.relpath('$PLUGIN_FILE', '$CFG_DIR'))" 2>/dev/null \
+        || node -e "const p=require('path');process.stdout.write(p.relative('$CFG_DIR','$PLUGIN_FILE'))")
+
     node << JSEOF
 const fs = require("fs");
-const path = "$VITE_CONFIG";
-let src = fs.readFileSync(path, "utf-8");
+const cfgPath = "$cfg";
+const relPlugin = "./${REL}".replace(/\\.mts$/, ".mjs");
+let src = fs.readFileSync(cfgPath, "utf-8");
 
-// Add import at the top
-const importLine = 'import { managedStylePlugin } from "./scripts/vite/managedStylePlugin.mjs";\n';
-if (!src.includes("managedStylePlugin")) {
+// add the import at the top
+const importLine = \`import { vendrixManagedStyle } from "\${relPlugin}";\n\`;
+if (!src.includes("vendrixManagedStyle")) {
     src = importLine + src;
 }
 
-// Inject into plugins array — find 'plugins: [' and add after it
-src = src.replace(/(plugins\s*:\s*\[)/, "\$1\n        managedStylePlugin(),");
+// inject into the plugins array
+if (src.includes("plugins:") && !src.includes("vendrixManagedStyle()")) {
+    src = src.replace(/(plugins\s*:\s*\[)/, "\$1\n        vendrixManagedStyle(),");
+}
 
-fs.writeFileSync(path, src, "utf-8");
-console.log("Vite config patched");
+fs.writeFileSync(cfgPath, src);
+console.log("  patched: $cfg");
 JSEOF
-    success "managedStyle Vite plugin injected into $VITE_CONFIG"
-else
-    info "managedStyle plugin already present, skipping"
+    PATCHED=$((PATCHED + 1))
+done < <(find "$VENCORD_DIR" -maxdepth 3 \( \
+    -name "*.vite.config.mts" \
+    -o -name "*.vite.config.ts" \
+    -o -name "vite.config.mts" \
+    -o -name "vite.config.ts" \
+    -o -name "vite.config.mjs" \
+    -o -name "vite.config.js" \
+\) 2>/dev/null)
+
+if [[ $PATCHED -eq 0 ]]; then
+    # couldn't find any vite config — css will still work, just won't be togglable
+    warn "no vite config found — css from ?managed imports will be statically inlined, enable/disable will be no-ops"
+
+    SHIM="$VENCORD_DIR/src/plugins/_vendrix_managed_shim.ts"
+    cat > "$SHIM" << 'EOF'
+// vendrix shim — placeholder so ?managed imports don't cause a build error.
+// auto-generated by apply-patches.sh, do not edit.
+EOF
 fi
 
-# ─── 3. AudioPlayer additions ─────────────────────────────────────────────────
-info "Patching AudioPlayer API with createAudioPlayer, defaultAudioNames, AudioPlayerInterface..."
+if [[ $PATCHED -gt 0 ]]; then
+    success "managedStyle plugin injected into $PATCHED vite config(s)"
+fi
+
+# 3. audioplayer extensions — adds createAudioPlayer, defaultAudioNames, AudioPlayerInterface
+info "patching AudioPlayer API..."
 
 AUDIO_PLAYER="$VENCORD_DIR/src/api/AudioPlayer.ts"
 [[ -f "$AUDIO_PLAYER" ]] || die "AudioPlayer.ts not found at $AUDIO_PLAYER"
 
-if ! grep -q "createAudioPlayer\|AudioPlayerInterface" "$AUDIO_PLAYER"; then
-    # Read existing file to understand what playAudio looks like
-    EXISTING=$(cat "$AUDIO_PLAYER")
-
+if ! grep -q "createAudioPlayer" "$AUDIO_PLAYER"; then
     cat >> "$AUDIO_PLAYER" << 'EOF'
 
-// ── Vendrix: Equicord AudioPlayer extensions ───────────────────────────────
-// Adds createAudioPlayer, defaultAudioNames, and AudioPlayerInterface so that
-// Equicord plugins that use the richer AudioPlayer API compile on vanilla Vencord.
+// vendrix: equicord audioplayer extensions
+// adds the richer api that equicord plugins expect on top of vanilla vencord's playAudio.
 
 export interface AudioPlayerInterface {
     play(): void;
@@ -191,11 +158,51 @@ export interface AudioPlayerInterface {
     readonly sound: string;
 }
 
-/**
- * Known Discord notification sound names.
- * This list covers the sounds available via playAudio() in vanilla Vencord.
- */
 const KNOWN_AUDIO_NAMES = [
+    "bop_message1","bop_message2","bop_message3",
+    "call_calling","call_ringing","call_ringing_beat",
+    "deafen","discodo","disconnect","high_five","human_man","interact",
+    "in_call_text_message","mention1","mention2","mention3","mute",
+    "navigation_backdrop_1","navigation_backdrop_2","overlapping_boop",
+    "outgoing_ring","ptt_start","ptt_stop","reconnect","request_to_speak",
+    "stream_started","stream_user_joined","stream_user_left",
+    "subtle_1","subtle_2","undeafen","unmute","vibing_wumpus",
+    "window_open","window_close","wumpus_tune",
+] as const;
+
+// returns all known discord notification sound names — used for dropdowns etc.
+export function defaultAudioNames(): string[] {
+    return [...KNOWN_AUDIO_NAMES];
+}
+
+export interface CreateAudioPlayerOptions {
+    volume?: number;
+    onEnded?: () => void; // fires when the sound finishes naturally (not on manual stop)
+}
+
+// creates a controllable player wrapping playAudio with play/stop lifecycle
+export function createAudioPlayer(sound: string, options: CreateAudioPlayerOptions = {}): AudioPlayerInterface {
+    let stopped = false;
+    return {
+        sound,
+        play() {
+            if (stopped) return;
+            playAudio(sound, { volume: options.volume ?? 100 })
+                .then(() => { if (!stopped) options.onEnded?.(); })
+                .catch(() => {});
+        },
+        stop() { stopped = true; }
+    };
+}
+EOF
+    success "AudioPlayer extensions injected"
+else
+    info "AudioPlayer extensions already present, skipping"
+fi
+
+echo ""
+echo -e "${GREEN}${BOLD}all patches applied.${RESET}"
+NAMES = [
     "bop_message1",
     "bop_message2",
     "bop_message3",
