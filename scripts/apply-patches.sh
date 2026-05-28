@@ -228,5 +228,67 @@ if [[ -f "$TYPES_FILE" ]] && ! grep -q "AudioPlayerAPI" "$TYPES_FILE"; then
     sed -i 's/\(type PluginDependency = \)\(.*\)$/\1"AudioPlayerAPI" | \2/' "$TYPES_FILE" 2>/dev/null || true
 fi
 
+# --- 4. discord-types enum shims ---
+# vanilla vencord's bundled discord-types doesn't export QuestTaskType or QuestRewardType.
+# we add them to the enums index so the plugin's imports resolve.
+info "adding QuestTaskType and QuestRewardType to discord-types enums..."
+
+ENUMS_INDEX="$VENCORD_DIR/packages/discord-types/enums/index.ts"
+if [[ -f "$ENUMS_INDEX" ]] && ! grep -q "QuestTaskType" "$ENUMS_INDEX"; then
+    cat >> "$ENUMS_INDEX" << 'EOF'
+
+// vendrix: quest enum shims -- not exported by vanilla vencord's discord-types
+export enum QuestTaskType {
+    WATCH_VIDEO = "WATCH_VIDEO",
+    WATCH_VIDEO_ON_MOBILE = "WATCH_VIDEO_ON_MOBILE",
+    ACHIEVEMENT_IN_ACTIVITY = "ACHIEVEMENT_IN_ACTIVITY",
+    ACHIEVEMENT_IN_GAME = "ACHIEVEMENT_IN_GAME",
+    PLAY_ACTIVITY = "PLAY_ACTIVITY",
+    PLAY_ON_DESKTOP = "PLAY_ON_DESKTOP",
+    PLAY_ON_DESKTOP_V2 = "PLAY_ON_DESKTOP_V2",
+    STREAM_ON_DESKTOP = "STREAM_ON_DESKTOP",
+    PLAY_ON_PLAYSTATION = "PLAY_ON_PLAYSTATION",
+    PLAY_ON_XBOX = "PLAY_ON_XBOX",
+}
+
+export enum QuestRewardType {
+    REWARD_CODE = "REWARD_CODE",
+    IN_GAME = "IN_GAME",
+    COLLECTIBLE = "COLLECTIBLE",
+    VIRTUAL_CURRENCY = "VIRTUAL_CURRENCY",
+    FRACTIONAL_PREMIUM = "FRACTIONAL_PREMIUM",
+}
+EOF
+    success "QuestTaskType and QuestRewardType added to discord-types enums"
+else
+    info "quest enums already present, skipping"
+fi
+
+# --- 5. QuestStore shim ---
+# vanilla vencord doesn't export QuestStore from @webpack/common.
+# we find it at runtime using findByPropsLazy and re-export it from the common index.
+info "adding QuestStore shim to @webpack/common..."
+
+WEBPACK_COMMON="$VENCORD_DIR/src/webpack/common/index.ts"
+if [[ -f "$WEBPACK_COMMON" ]] && ! grep -q "QuestStore" "$WEBPACK_COMMON"; then
+    # write the store shim as its own file so we don't pollute the common index directly
+    STORES_SHIM="$VENCORD_DIR/src/webpack/common/questStoreShim.ts"
+    cat > "$STORES_SHIM" << 'EOF'
+// vendrix: QuestStore shim
+// vanilla vencord doesn't expose QuestStore in @webpack/common, so we find it ourselves.
+import { findByPropsLazy } from "@webpack";
+
+export const QuestStore: {
+    getQuest(id: string): any;
+    quests: Map<string, any>;
+    excludedQuests: Map<string, any>;
+} = findByPropsLazy("getQuest", "quests");
+EOF
+    echo 'export { QuestStore } from "./questStoreShim";' >> "$WEBPACK_COMMON"
+    success "QuestStore shim added to @webpack/common"
+else
+    info "QuestStore already present, skipping"
+fi
+
 echo ""
 echo -e "${GREEN}${BOLD}all patches applied.${RESET}"
