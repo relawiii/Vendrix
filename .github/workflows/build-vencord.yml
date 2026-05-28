@@ -78,6 +78,8 @@ jobs:
     name: Trigger APK workflows
     needs: build          # only runs after build succeeds
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
     steps:
       - name: Trigger APK workflow(s)
         uses: actions/github-script@v7
