@@ -140,22 +140,32 @@ if [[ $PATCHED -gt 0 ]]; then
     success "managedStyle plugin injected into $PATCHED vite config(s)"
 fi
 
-# 3. audioplayer extensions — adds createAudioPlayer, defaultAudioNames, AudioPlayerInterface
-info "patching AudioPlayer API..."
+# 3. audioplayer api — vanilla vencord doesn't have this at all, so we create it from scratch
+info "creating AudioPlayer API..."
 
 AUDIO_PLAYER="$VENCORD_DIR/src/api/AudioPlayer.ts"
-[[ -f "$AUDIO_PLAYER" ]] || die "AudioPlayer.ts not found at $AUDIO_PLAYER"
+API_INDEX="$VENCORD_DIR/src/api/index.ts"
 
-if ! grep -q "createAudioPlayer" "$AUDIO_PLAYER"; then
-    cat >> "$AUDIO_PLAYER" << 'EOF'
+if ! grep -q "createAudioPlayer" "$AUDIO_PLAYER" 2>/dev/null; then
+    cat > "$AUDIO_PLAYER" << 'EOF'
+// vendrix: full AudioPlayer API shim
+// vanilla vencord doesn't ship this — we create it so equicord plugins that import
+// from @api/AudioPlayer work without changes.
 
-// vendrix: equicord audioplayer extensions
-// adds the richer api that equicord plugins expect on top of vanilla vencord's playAudio.
+import { findByPropsLazy } from "@webpack";
+
+// grab discord's internal sound player
+const SoundUtils = findByPropsLazy("playSound", "createSound");
 
 export interface AudioPlayerInterface {
     play(): void;
     stop(): void;
     readonly sound: string;
+}
+
+export interface CreateAudioPlayerOptions {
+    volume?: number;
+    onEnded?: () => void; // fires when the sound finishes naturally (not on manual stop)
 }
 
 const KNOWN_AUDIO_NAMES = [
@@ -175,12 +185,17 @@ export function defaultAudioNames(): string[] {
     return [...KNOWN_AUDIO_NAMES];
 }
 
-export interface CreateAudioPlayerOptions {
-    volume?: number;
-    onEnded?: () => void; // fires when the sound finishes naturally (not on manual stop)
+// plays a sound by name at the given volume (0–100)
+export function playAudio(sound: string, options: { volume?: number; } = {}): Promise<void> {
+    return new Promise(resolve => {
+        try {
+            SoundUtils.playSound(sound, (options.volume ?? 100) / 100);
+        } catch { /* sound not found or module not ready */ }
+        resolve();
+    });
 }
 
-// creates a controllable player wrapping playAudio with play/stop lifecycle
+// creates a controllable player with play/stop lifecycle
 export function createAudioPlayer(sound: string, options: CreateAudioPlayerOptions = {}): AudioPlayerInterface {
     let stopped = false;
     return {
@@ -195,63 +210,26 @@ export function createAudioPlayer(sound: string, options: CreateAudioPlayerOptio
     };
 }
 EOF
-    success "AudioPlayer extensions injected"
+    success "AudioPlayer API created"
 else
-    info "AudioPlayer extensions already present, skipping"
+    info "AudioPlayer already has createAudioPlayer, skipping"
+fi
+
+# make sure the api index exports it so @api/AudioPlayer resolves correctly
+if [[ -f "$API_INDEX" ]] && ! grep -q "AudioPlayer" "$API_INDEX"; then
+    echo 'export * from "./AudioPlayer";' >> "$API_INDEX"
+    success "AudioPlayer registered in api/index.ts"
+fi
+
+# register AudioPlayerAPI as a known plugin dependency if the type exists
+TYPES_FILE="$VENCORD_DIR/src/utils/types.ts"
+if [[ -f "$TYPES_FILE" ]] && ! grep -q "AudioPlayerAPI" "$TYPES_FILE"; then
+    sed -i 's/\(type PluginDependency = \)\(.*\)$/\1"AudioPlayerAPI" | \2/' "$TYPES_FILE" 2>/dev/null || true
 fi
 
 echo ""
 echo -e "${GREEN}${BOLD}all patches applied.${RESET}"
-NAMES = [
-    "bop_message1",
-    "bop_message2",
-    "bop_message3",
-    "call_calling",
-    "call_ringing",
-    "call_ringing_beat",
-    "deafen",
-    "discodo",
-    "disconnect",
-    "high_five",
-    "human_man",
-    "interact",
-    "in_call_text_message",
-    "mention1",
-    "mention2",
-    "mention3",
-    "mute",
-    "navigation_backdrop_1",
-    "navigation_backdrop_2",
-    "overlapping_boop",
-    "outgoing_ring",
-    "ptt_start",
-    "ptt_stop",
-    "reconnect",
-    "request_to_speak",
-    "stream_started",
-    "stream_user_joined",
-    "stream_user_left",
-    "subtle_1",
-    "subtle_2",
-    "undeafen",
-    "unmute",
-    "vibing_wumpus",
-    "window_open",
-    "window_close",
-    "wumpus_tune",
-] as const;
-
-/**
- * Returns the list of all known Discord audio notification sound names.
- * Used to populate sound picker dropdowns.
- */
-export function defaultAudioNames(): string[] {
-    return [...KNOWN_AUDIO_NAMES];
-}
-
-export interface CreateAudioPlayerOptions {
-    volume?: number;
-    /** Called when the sound finishes playing naturally (not when stopped manually). */
+d manually). */
     onEnded?: () => void;
 }
 
