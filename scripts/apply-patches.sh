@@ -381,7 +381,28 @@ NAMED_OPTION=$(grep -cE '^export (enum|const) OptionType\b|export \{[^}]*\bOptio
 
 if [[ "$NAMED_OPTION" -eq 0 ]]; then
     OT_SRC=$(grep -rl "^export enum OptionType\|^export const OptionType" \
-        "$VENCORD_DIR/src/utils/" 2>/dev/null | grep -v "types.ts" | head -1)
+        "$VENCORD_DIR/src/utils/" 2>/dev/null | grep -v "types.ts" | head -1 || true)
+    if [[ -n "$OT_SRC" ]]; then
+        OT_REL="./$(basename "$OT_SRC" .ts)"
+        {
+            echo "// vendrix: re-export OptionType for { OptionType } imports"
+            echo "export { OptionType } from \"$OT_REL\";"
+        } >> "$TYPES_FILE"
+        TYPES_PATCH_NEEDED=true
+    else
+        warn "OptionType not found outside types.ts — skipping"
+    fi
+fi
+
+if [[ "$TYPES_PATCH_NEEDED" == "true" ]]; then
+    success "named exports added to @utils/types"
+else
+    info "definePlugin and OptionType already have named exports in types.ts, skipping"
+fi
+
+echo ""
+echo -e "${GREEN}${BOLD}all patches applied.${RESET}"
+        "$VENCORD_DIR/src/utils/" 2>/dev/null | grep -v "types.ts" | head -1 || true)
     if [[ -n "$OT_SRC" ]]; then
         OT_REL="./$(basename "$OT_SRC" .ts)"
         {
